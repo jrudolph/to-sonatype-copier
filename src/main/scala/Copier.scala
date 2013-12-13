@@ -1,8 +1,10 @@
+import java.security.MessageDigest
 import sbt._
 import java.io.{ FileOutputStream, File }
 import org.apache.ivy.core.module.id.ModuleRevisionId
 import org.apache.ivy.core.resolve.DownloadOptions
 import org.apache.ivy.core.module.descriptor.DefaultArtifact
+import scala.util.Try
 
 object Copier extends App {
   val gpgPath = "/usr/local/bin/gpg"
@@ -14,12 +16,7 @@ object Copier extends App {
     Kind("jar", "jar"),
     Kind("pom", "pom"),
     Kind("src", "jar", "e:classifier" -> "sources"),
-    Kind("doc", "jar", "e:classifier" -> "javadoc")).flatMap {
-      case k @ Kind(_, "pom") ⇒ Seq(k) // no hashes for poms which will be rewritten
-      case k @ Kind(a, b, c @ _*) ⇒
-        Seq(k, Kind(a, b + ".md5", c: _*), Kind(a, b + ".sha1", c: _*))
-
-    }
+    Kind("doc", "jar", "e:classifier" -> "javadoc"))
 
   case class Kind(tpe: String, ext: String, extra: (String, String)*)
   val artifacts = Seq("")
@@ -35,6 +32,9 @@ object Copier extends App {
     Seq(DefaultMavenRepository, sprayResolver, release), Nil, Nil, false, None, Nil, None, logger)
   val ivy = new IvySbt(config)
 
+  val sha1 = () ⇒ MessageDigest.getInstance("sha1")
+  val md5 = () ⇒ MessageDigest.getInstance("md5")
+
   ivy.withIvy(logger) { ivy ⇒
     def module(name: String, version: String) = ModuleRevisionId.newInstance(org, name, version)
     val target = ivy.getSettings.getResolver("oss")
@@ -47,7 +47,13 @@ object Copier extends App {
       import scala.collection.JavaConverters._
       val ivyModule = module(name, version)
       def artifact(extraExt: String = "") = new DefaultArtifact(ivyModule, null, ivyModule.getName, kind.tpe, kind.ext + extraExt, kind.extra.toMap.asJava)
-      def publish(a: DefaultArtifact, from: File): Unit = target.publish(a, from, true)
+      def publish(a: DefaultArtifact, from: File): Unit =
+        Try(target.publish(a, from, true))
+
+      def publishHashes(suffix: String, file: File): Unit = {
+        publish(artifact(suffix + ".md5"), hash(md5, file))
+        publish(artifact(suffix + ".sha1"), hash(sha1, file))
+      }
 
       val rep = ivy.getResolveEngine.download(artifact(), new DownloadOptions)
 
@@ -72,18 +78,33 @@ object Copier extends App {
         } else rep.getLocalFile
 
       publish(artifact(), file)
+      publishHashes("", file)
 
       if (Set("jar", "pom")(kind.ext)) {
-        val tempAsc = File.createTempFile("signer", ".asc")
-        tempAsc.delete()
-        tempAsc.deleteOnExit()
+        val tempAsc = tempFile()
         Process(gpgPath, Seq("-ab", "-o", tempAsc.getAbsolutePath, file.getAbsolutePath)).!
-        val fos = new FileOutputStream(tempAsc, true)
-        fos.write("abc".getBytes)
-        fos.close()
 
         publish(artifact(".asc"), tempAsc)
+        publishHashes(".asc", tempAsc)
       }
     }
+  }
+
+  def hash(digest: () ⇒ MessageDigest, file: File): File = {
+    val md = digest()
+    val res = md.digest(IO.readBytes(file))
+    tempFile(res.map(b ⇒ (b & 0xff) formatted "%02x").mkString)
+  }
+
+  def tempFile(value: String): File = {
+    val t = tempFile()
+    IO.write(t, value)
+    t
+  }
+  def tempFile(): File = {
+    val temp = File.createTempFile("temp", ".tmp")
+    temp.delete()
+    temp.deleteOnExit()
+    temp
   }
 }
