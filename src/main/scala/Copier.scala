@@ -15,7 +15,10 @@ object Copier extends App {
     Kind("pom", "pom"),
     Kind("src", "jar", "e:classifier" -> "sources"),
     Kind("doc", "jar", "e:classifier" -> "javadoc")).flatMap {
-      case k @ Kind(a, b, c @ _*) ⇒ Seq(k, Kind(a, b + ".md5", c: _*), Kind(a, b + ".sha1", c: _*))
+      case k @ Kind(_, "pom") ⇒ Seq(k) // no hashes for poms which will be rewritten
+      case k @ Kind(a, b, c @ _*) ⇒
+        Seq(k, Kind(a, b + ".md5", c: _*), Kind(a, b + ".sha1", c: _*))
+
     }
 
   case class Kind(tpe: String, ext: String, extra: (String, String)*)
@@ -52,16 +55,15 @@ object Copier extends App {
         if (kind.ext == "pom") {
           val res = IO.read(rep.getLocalFile)
           val devSection =
-            """    <scm>
+            """<scm>
               |       <url>git://github.com/spray/spray.git</url>
               |       <connection>scm:git:git@github.com:spray/spray.git</connection>
               |    </scm>
               |    <developers>
               |       <developer><id>sirthias</id><name>Mathias Doenitz</name></developer>
               |       <developer><id>jrudolph</id><name>Johannes Rudolph</name></developer>
-              |    </developers>
-              |</project>""".stripMargin
-          val fixed = res.replaceAllLiterally("</project>", devSection)
+              |    </developers>""".stripMargin
+          val fixed = res.replaceAll("""(?s:<repositories>.*?</repositories>)""", devSection)
           val temp = File.createTempFile("fixed", ".pom")
           temp.delete()
           temp.deleteOnExit()
