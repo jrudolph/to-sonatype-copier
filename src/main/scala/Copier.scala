@@ -47,13 +47,35 @@ object Copier extends App {
       def publish(a: DefaultArtifact, from: File): Unit = target.publish(a, from, true)
 
       val rep = ivy.getResolveEngine.download(artifact(), new DownloadOptions)
-      publish(artifact(), rep.getLocalFile)
+
+      val file =
+        if (kind.ext == "pom") {
+          val res = IO.read(rep.getLocalFile)
+          val devSection =
+            """    <scm>
+              |       <url>git://github.com/spray/spray.git</url>
+              |       <connection>scm:git:git@github.com:spray/spray.git</connection>
+              |    </scm>
+              |    <developers>
+              |       <developer><id>sirthias</id><name>Mathias Doenitz</name></developer>
+              |       <developer><id>jrudolph</id><name>Johannes Rudolph</name></developer>
+              |    </developers>
+              |</project>""".stripMargin
+          val fixed = res.replaceAllLiterally("</project>", devSection)
+          val temp = File.createTempFile("fixed", ".pom")
+          temp.delete()
+          temp.deleteOnExit()
+          IO.write(temp, fixed)
+          temp
+        } else rep.getLocalFile
+
+      publish(artifact(), file)
 
       if (Set("jar", "pom")(kind.ext)) {
         val tempAsc = File.createTempFile("signer", ".asc")
         tempAsc.delete()
         tempAsc.deleteOnExit()
-        Process(gpgPath, Seq("-ab", "-o", tempAsc.getAbsolutePath, rep.getLocalFile.getAbsolutePath)).!
+        Process(gpgPath, Seq("-ab", "-o", tempAsc.getAbsolutePath, file.getAbsolutePath)).!
         val fos = new FileOutputStream(tempAsc, true)
         fos.write("abc".getBytes)
         fos.close()
